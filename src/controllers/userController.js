@@ -1,5 +1,8 @@
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const { User } = require('../models');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'drip_store_secret_key';
 
 async function getById(req, res) {
   try {
@@ -58,8 +61,8 @@ async function update(req, res) {
   try {
     const { firstname, surname, email } = req.body;
 
-    if (!firstname && !surname && !email) {
-      return res.status(400).json({ message: 'Nenhum dado informado para atualização' });
+    if (!firstname || !surname || !email) {
+      return res.status(400).json({ message: 'Nome, sobrenome e e-mail são obrigatórios' });
     }
 
     const user = await User.findByPk(req.params.id);
@@ -67,11 +70,7 @@ async function update(req, res) {
       return res.status(404).json({ message: 'Usuário não encontrado' });
     }
 
-    await user.update({
-      ...(firstname && { firstname }),
-      ...(surname && { surname }),
-      ...(email && { email }),
-    });
+    await user.update({ firstname, surname, email });
 
     return res.status(204).send();
   } catch (error) {
@@ -87,7 +86,38 @@ async function remove(req, res) {
     }
 
     await user.destroy();
+
     return res.status(204).send();
+  } catch (error) {
+    return res.status(400).json({ message: error.message });
+  }
+}
+
+async function generateToken(req, res) {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: 'E-mail e senha são obrigatórios' });
+    }
+
+    const user = await User.findOne({ where: { email } });
+    if (!user) {
+      return res.status(400).json({ message: 'E-mail ou senha inválidos' });
+    }
+
+    const passwordMatch = await bcrypt.compare(password, user.password);
+    if (!passwordMatch) {
+      return res.status(400).json({ message: 'E-mail ou senha inválidos' });
+    }
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    return res.status(200).json({ token });
   } catch (error) {
     return res.status(400).json({ message: error.message });
   }
@@ -98,4 +128,5 @@ module.exports = {
   create,
   update,
   remove,
+  generateToken,
 };
