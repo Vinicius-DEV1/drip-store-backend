@@ -1,6 +1,21 @@
 const { Op } = require('sequelize');
 const { Product, Category, ProductImage, ProductOption } = require('../models');
 
+function parseOptionFilters(req) {
+  const filters = {};
+  const queryString = req.originalUrl.split('?')[1] || '';
+  const params = new URLSearchParams(queryString);
+
+  for (const [key, value] of params.entries()) {
+    const match = key.match(/^option\[(\d+)\]$/);
+    if (match) {
+      filters[match[1]] = value;
+    }
+  }
+
+  return Object.entries(filters);
+}
+
 async function search(req, res) {
   try {
     const limit = req.query.limit !== undefined ? Number(req.query.limit) : 12;
@@ -9,7 +24,6 @@ async function search(req, res) {
     if (Number.isNaN(limit) || Number.isNaN(page) || page < 1) {
       return res.status(400).json({ message: 'Parâmetros de paginação inválidos' });
     }
-    
 
     const where = {};
 
@@ -22,6 +36,9 @@ async function search(req, res) {
 
     if (req.query['price-range']) {
       const [min, max] = req.query['price-range'].split('-').map(Number);
+      if (Number.isNaN(min) || Number.isNaN(max)) {
+        return res.status(400).json({ message: 'Parâmetro price-range inválido' });
+      }
       where.price = { [Op.between]: [min, max] };
     }
 
@@ -33,6 +50,9 @@ async function search(req, res) {
 
     if (req.query.category_ids) {
       const ids = req.query.category_ids.split(',').map(Number);
+      if (ids.some(Number.isNaN)) {
+        return res.status(400).json({ message: 'Parâmetro category_ids inválido' });
+      }
       include[2] = {
         model: Category,
         as: 'categories',
@@ -41,15 +61,42 @@ async function search(req, res) {
       };
     }
 
+    const optionEntries = parseOptionFilters(req);
+    const hasOptionFilter = optionEntries.length > 0;
+
     const options = { where, include, distinct: true };
-    if (limit !== -1) {
+    if (limit !== -1 && !hasOptionFilter) {
       options.limit = limit;
       options.offset = (page - 1) * limit;
     }
 
     const { count, rows } = await Product.findAndCountAll(options);
 
-    const data = rows.map((p) => {
+    let filteredRows = rows;
+    let total = count;
+
+    if (hasOptionFilter) {
+      filteredRows = rows.filter((p) =>
+        optionEntries.every(([optId, rawValues]) => {
+          const wanted = String(rawValues)
+            .split(',')
+            .map((v) => v.trim());
+          return p.options.some((opt) => {
+            if (String(opt.id) !== String(optId)) return false;
+            const optValues = opt.values.split(',').map((v) => v.trim());
+            return wanted.some((w) => optValues.includes(w));
+          });
+        })
+      );
+
+      total = filteredRows.length;
+      if (limit !== -1) {
+        const start = (page - 1) * limit;
+        filteredRows = filteredRows.slice(start, start + limit);
+      }
+    }
+
+    const data = filteredRows.map((p) => {
       const item = {
         id: p.id,
         enabled: p.enabled,
@@ -83,7 +130,7 @@ async function search(req, res) {
       return item;
     });
 
-    return res.status(200).json({ data, total: count, limit, page });
+    return res.status(200).json({ data, total, limit, page });
   } catch (error) {
     return res.status(400).json({ message: error.message });
   }
@@ -214,7 +261,7 @@ async function update(req, res) {
         if (img.id && img.deleted) {
           await ProductImage.destroy({ where: { id: img.id, product_id: product.id } });
         } else if (img.id && img.content) {
-          await ProductImage.update({ path: img.content }, { where: { id: img.id } });
+          await ProductImage.update({ path: img.content }, { where: { id: img.id, product_id: product.id } });
         } else if (img.content) {
           await ProductImage.create({ product_id: product.id, enabled: true, path: img.content });
         }
@@ -230,10 +277,12 @@ async function update(req, res) {
           await ProductOption.update(
             {
               ...(opt.title && { title: opt.title }),
+              ...(opt.shape && { shape: opt.shape }),
+              ...(opt.type && { type: opt.type }),
               ...(opt.radius !== undefined && { radius: parseInt(opt.radius, 10) || 0 }),
               ...(vals && { values: Array.isArray(vals) ? vals.join(',') : String(vals) }),
             },
-            { where: { id: opt.id } }
+            { where: { id: opt.id, product_id: product.id } }
           );
         } else {
           const vals = opt.values || opt.value || [];
