@@ -3,8 +3,13 @@ const { Product, Category, ProductImage, ProductOption } = require('../models');
 
 async function search(req, res) {
   try {
-    const limit = req.query.limit ? Number(req.query.limit) : 12;
-    const page = req.query.page ? Number(req.query.page) : 1;
+    const limit = req.query.limit !== undefined ? Number(req.query.limit) : 12;
+    const page = req.query.page !== undefined ? Number(req.query.page) : 1;
+
+    if (Number.isNaN(limit) || Number.isNaN(page) || page < 1) {
+      return res.status(400).json({ message: 'Parâmetros de paginação inválidos' });
+    }
+    
 
     const where = {};
 
